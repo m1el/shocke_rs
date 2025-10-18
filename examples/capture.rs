@@ -147,24 +147,33 @@ impl Demodulator {
         
         // Check if we have a valid preamble at the current position
         if !self.in_packet {
-            // Look for preamble pattern
-            let mut alternating_count = 0;
-            for i in 0..PREAMBLE_BITS.min(self.bit_buffer.len()) {
-                let expected = (i & 1) == 1;
-                if self.bit_buffer[i] == expected {
-                    alternating_count += 1;
-                } else {
-                    break;
+            // Look for preamble pattern - try both phases (starting with 0 or 1)
+            let mut best_alternating_count = 0;
+            let mut best_phase = false;
+            
+            for phase in [false, true] {
+                let mut alternating_count = 0;
+                for i in 0..PREAMBLE_BITS.min(self.bit_buffer.len()) {
+                    let expected = ((i & 1) == 1) ^ phase;
+                    if self.bit_buffer[i] == expected {
+                        alternating_count += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if alternating_count > best_alternating_count {
+                    best_alternating_count = alternating_count;
+                    best_phase = phase;
                 }
             }
             
             // Require at least 90% match for preamble
-            if alternating_count >= (PREAMBLE_BITS * 9 / 10) {
+            if best_alternating_count >= (PREAMBLE_BITS * 9 / 10) {
                 self.in_packet = true;
             } else {
-                // Remove old bits to prevent buffer from growing indefinitely
+                // Remove one bit and try again
                 if self.bit_buffer.len() > PACKET_BITS * 2 {
-                    self.bit_buffer.drain(..PACKET_BITS);
+                    self.bit_buffer.drain(..1);
                 }
                 return;
             }
