@@ -5,8 +5,24 @@ use hackrf_rs::{
     options::TxOptions,
     DeviceList, Hackrf,
 };
+use serde::Deserialize;
 
 type LazyResult<T> = Result<T, Box<dyn core::error::Error>>;
+
+#[derive(Debug, Deserialize)]
+struct ShockerConfig {
+    name: String,
+    uuid: String,
+    #[serde(rename = "type")]
+    shocker_type: String,
+    device_id: u64,
+    channel_id: u8,
+}
+
+#[derive(Debug, Deserialize)]
+struct Config {
+    shocker: Vec<ShockerConfig>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Command {
@@ -65,12 +81,19 @@ fn crc16_xmodem(data: &[u8]) -> u16 {
     crc ^ xor
 }
 
+fn load_config() -> LazyResult<Config> {
+    let config_path = "shockers.toml";
+    let config_content = std::fs::read_to_string(config_path)?;
+    let config: Config = toml::from_str(&config_content)?;
+    Ok(config)
+}
+
 impl State {
-    fn new(center_freq: f64, sample_rate: f64) -> Self {
+    fn new(center_freq: f64, sample_rate: f64, device_id: u64, channel_id: u8) -> Self {
         Self {
             command: Command::Idle, center_freq, sample_rate,
             freq_lo: 433_600_000.0, freq_hi: 433_664_000.0,
-            device_id: 0x3a97b259957f1a27, channel_id: 0xa5,
+            device_id, channel_id,
             bit_rate: 4800.0,
             counter: 0b11000010,
             phase: 0.0, current_sample: 0,
@@ -142,6 +165,20 @@ fn main() -> LazyResult<()> {
     // std::fs::write("generated.bin", buffer)?;
     // if true { return Ok(()); }
 
+    // Load shocker configurations
+    let config = load_config()?;
+    
+    if config.shocker.is_empty() {
+        return Err("No shockers configured in shockers.toml".into());
+    }
+    
+    // Use the first shocker for now
+    let shocker = &config.shocker[0];
+    println!("Using shocker: {} ({})", shocker.name, shocker.uuid);
+    println!("  Type: {}", shocker.shocker_type);
+    println!("  Device ID: 0x{:016x}", shocker.device_id);
+    println!("  Channel ID: 0x{:02x}", shocker.channel_id);
+
     println!("Available devices:");
     for device in DeviceList::new()?.iter() {
         println!("{device:?}");
@@ -172,7 +209,7 @@ fn main() -> LazyResult<()> {
     let done2_tx = done_tx.clone();
 
     // hackrf transmit loop
-    let mut current_state = State::new(433_500_000.0, 10_000_000.0);
+    let mut current_state = State::new(433_500_000.0, 10_000_000.0, shocker.device_id, shocker.channel_id);
     hackrf.start_tx(options, move |samples| {
         while let Ok(command) = command_rx.try_recv() {
             if command == Command::Quit {
@@ -255,3 +292,41 @@ fn main() -> LazyResult<()> {
     hackrf.stop_tx()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_config() {
+        let config = load_config().expect("Failed to load config");
+        assert!(!config.shocker.is_empty(), "Config should have at least one shocker");
+        
+        let shocker = &config.shocker[0];
+        assert_eq!(shocker.name, "The First One");
+        assert_eq!(shocker.uuid, "0199e439-c376-797d-92f5-6b0f077ecf53");
+        assert_eq!(shocker.shocker_type, "jugbow");
+        assert_eq!(shocker.device_id, 0x3a97b259957f1a27);
+        assert_eq!(shocker.channel_id, 0xa5);
+    }
+
+    #[test]
+    fn test_state_with_config() {
+        let config = load_config().expect("Failed to load config");
+        let shocker = &config.shocker[0];
+        
+        let state = State::new(433_500_000.0, 10_000_000.0, shocker.device_id, shocker.channel_id);
+        assert_eq!(state.device_id, 0x3a97b259957f1a27);
+        assert_eq!(state.channel_id, 0xa5);
+    }
+
+    #[test]
+    fn test_crc16_xmodem() {
+        // Test with known data
+        let data = [0x01, 0x00, 0x00];
+        let crc = crc16_xmodem(&data);
+        // This is a simple smoke test to ensure the function works
+        assert!(crc != 0);
+    }
+}
+
