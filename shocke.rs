@@ -7,6 +7,9 @@ use hackrf_rs::{
 };
 use serde::Deserialize;
 
+mod jugbow_modem;
+use jugbow_modem::{Modulator, Command};
+
 type LazyResult<T> = Result<T, Box<dyn core::error::Error>>;
 
 #[derive(Debug, Deserialize)]
@@ -24,62 +27,7 @@ struct Config {
     shocker: Vec<ShockerConfig>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Command {
-    Idle,
-    Quit,
-    Vibrate(u8),
-    Shock(u8),
-    Beep(u8),
-}
 
-impl Command {
-    const SHOCK  : u8 = 0b01110001;
-    const VIBRATE: u8 = 0b01110010;
-    const BEEP   : u8 = 0b01110011;
-    fn command_bytes(&self) -> [u8; 2] {
-        match self {
-            Command::Idle | Command::Quit => [0, 0],
-            Command::Vibrate(level) => [Self::VIBRATE, *level],
-            Command::Shock(level) => [Self::SHOCK, *level],
-            Command::Beep(level) => [Self::BEEP, *level],
-        }
-    }
-}
-
-struct State {
-    command: Command,
-    center_freq: f64,
-    sample_rate: f64,
-    freq_lo: f64,
-    freq_hi: f64,
-    bit_rate: f64,
-    device_id: u64,
-    channel_id: u8,
-    counter: u8,
-    phase: f64,
-    current_sample: usize,
-    buffer: Vec<u8>,
-}
-
-fn crc16_xmodem(data: &[u8]) -> u16 {
-    // https://crccalc.com/?crc=010000&method=CRC-16&datatype=hex&outtype=hex
-    // initial value is determined by matching the existing CRC
-    let mut crc = 0x3be7;
-    let poly = 0x1021;
-    let xor = 0; // 0x097f
-    for &byte in data {
-        crc ^= (byte as u16) << 8;
-        for _ in 0..8 {
-            if crc & 0x8000 != 0 {
-                crc = (crc << 1) ^ poly;
-            } else {
-                crc = crc << 1
-            }
-        }
-    }
-    crc ^ xor
-}
 
 fn load_config() -> LazyResult<Config> {
     let config_path = "shockers.toml";
@@ -88,76 +36,10 @@ fn load_config() -> LazyResult<Config> {
     Ok(config)
 }
 
-impl State {
-    fn new(center_freq: f64, sample_rate: f64, device_id: u64, channel_id: u8) -> Self {
-        Self {
-            command: Command::Idle, center_freq, sample_rate,
-            freq_lo: 433_600_000.0, freq_hi: 433_664_000.0,
-            device_id, channel_id,
-            bit_rate: 4800.0,
-            counter: 0b11000010,
-            phase: 0.0, current_sample: 0,
-            buffer: vec![0; 148],
-        }
-    }
-    fn set_command(&mut self, command: Command) {
-        self.command = command.clone();
-        self.buffer.fill(0);
-        self.current_sample = 0;
-        self.phase = 0.0;
-        if matches!(command, Command::Idle | Command::Quit) {
-            return;
-        }
-        const PREAMBLE_BYTES: usize = 133;
-        self.buffer[..PREAMBLE_BYTES].fill(0xaa);
-        let data_bits = &mut self.buffer[PREAMBLE_BYTES..][..14];
-        data_bits[..8].copy_from_slice(&self.device_id.to_be_bytes());
-        data_bits[8] = self.channel_id;
-        data_bits[9] = self.counter;
-        // eprintln!("{:?}", command.command_bytes());
-        data_bits[10..12].copy_from_slice(&command.command_bytes());
-        let crc = crc16_xmodem(&data_bits[..12]);
-        data_bits[12..14].copy_from_slice(&crc.to_be_bytes());
-        // for byte in data_bits {            
-        //     eprintln!("{:08b}", byte);
-        // }
-    }
-    fn fill(&mut self, buffer: &mut[u8]) -> usize {
-        if matches!(self.command, Command::Idle | Command::Quit) {
-            buffer.fill(0);
-            return buffer.len();
-        }
-        // let start = std::time::Instant::now();
-        use core::f64::consts::TAU;
-        let samples_per_bit = (self.sample_rate / self.bit_rate) as usize;
 
-        let omega_lo = TAU * (self.freq_lo - self.center_freq) / self.sample_rate;
-        let omega_hi = TAU * (self.freq_hi - self.center_freq) / self.sample_rate;
-        let (iqs, _whatever) = buffer.as_chunks_mut::<2>();
-        for iq in iqs.iter_mut() {
-            let current_bit = self.current_sample / samples_per_bit;
-            let byte_idx = current_bit >> 3;
-            let bit_idx = 7 - (current_bit & 7);
-            if byte_idx >= self.buffer.len() {
-                self.set_command(Command::Idle);
-                break;
-            }
-            let bit = (self.buffer[byte_idx] >> bit_idx) & 1;
-            let omega = if bit == 0 { omega_lo } else { omega_hi };
-            self.phase = (self.phase + omega).rem_euclid(TAU);
-            let (sin, cos) = self.phase.sin_cos();
-            iq[0] = ((cos + 1.0) * 127.5) as u8;
-            iq[1] = ((sin + 1.0) * 127.5) as u8;
-            self.current_sample += 1;
-        }
-
-        // eprintln!("elapsed: {:?}", start.elapsed());
-        buffer.len()
-    }
-}
 
 fn main() -> LazyResult<()> {
-    // let mut current_state = State::new(433_500_000.0, 10_000_000.0);
+    // let mut current_state = Modulator::new(433_500_000.0, 10_000_000.0, 0x3a97b259957f1a27, 0xa5);
     // current_state.set_command(Command::Vibrate(2));
     // let samples = (10_000_000_f64 / 4790_f64 * 1180_f64) as usize * 2;
     // let mut buffer = vec![0; samples];
@@ -209,21 +91,21 @@ fn main() -> LazyResult<()> {
     let done2_tx = done_tx.clone();
 
     // hackrf transmit loop
-    let mut current_state = State::new(433_500_000.0, 10_000_000.0, shocker.device_id, shocker.channel_id);
+    let mut current_state = Modulator::new(433_500_000.0, 10_000_000.0, shocker.device_id, shocker.channel_id);
     hackrf.start_tx(options, move |samples| {
         while let Ok(command) = command_rx.try_recv() {
             if command == Command::Quit {
                 eprintln!("quitting: {command:?}");
                 return ControlFlow::Break(0);
             }
-            if current_state.command == Command::Idle {
+            if *current_state.get_command() == Command::Idle {
                 eprintln!("new command: {command:?}");
                 current_state.set_command(command);
             } else {
                 eprintln!("previous command in progress, ignoring command: {command:?}...");
             }
         }
-        if current_state.command == Command::Quit {
+        if *current_state.get_command() == Command::Quit {
         }
         let written = current_state.fill(samples);
         ControlFlow::Continue(written)
@@ -311,22 +193,12 @@ mod tests {
     }
 
     #[test]
-    fn test_state_with_config() {
+    fn test_modulator_with_config() {
         let config = load_config().expect("Failed to load config");
         let shocker = &config.shocker[0];
         
-        let state = State::new(433_500_000.0, 10_000_000.0, shocker.device_id, shocker.channel_id);
-        assert_eq!(state.device_id, 0x3a97b259957f1a27);
-        assert_eq!(state.channel_id, 0xa5);
-    }
-
-    #[test]
-    fn test_crc16_xmodem() {
-        // Test with known data
-        let data = [0x01, 0x00, 0x00];
-        let crc = crc16_xmodem(&data);
-        // This is a simple smoke test to ensure the function works
-        assert!(crc != 0);
+        let state = Modulator::new(433_500_000.0, 10_000_000.0, shocker.device_id, shocker.channel_id);
+        assert_eq!(*state.get_command(), Command::Idle);
     }
 }
 

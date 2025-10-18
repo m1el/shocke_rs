@@ -7,6 +7,10 @@ edition = "2024"
 name = "shocke_rs"
 path = "shocke.rs"
 
+[[example]]
+name = "capture"
+path = "examples/capture.rs"
+
 [dependencies]
 ctrlc = "3.5.0"
 hackrf-rs = { path = "hackrf-rs" }
