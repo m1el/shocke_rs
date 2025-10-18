@@ -52,8 +52,7 @@ pub struct DeviceList {
 impl DeviceList {
     /// Get the list of available HackRF devices
     pub fn new() -> Result<Self, HackrfError> {
-        let rv = unsafe { ffi::hackrf_init() };
-        HackrfError::from_i32(rv)?;
+        HackrfError::from_i32(unsafe { ffi::hackrf_init() })?;
         let device_list = unsafe { ffi::hackrf_device_list() };
         let device_list = NonNull::new(device_list)
             .expect("hackrf_device_list returns null");
@@ -212,6 +211,7 @@ impl Hackrf {
 
     /// Open first available HackRF device
     pub fn open_first() -> Result<Self, HackrfError> {
+        HackrfError::from_i32(unsafe { ffi::hackrf_init() })?;
         let mut device = core::ptr::null_mut();
         let rv = unsafe { ffi::hackrf_open(&mut device) };
         HackrfError::from_i32(rv)?;

@@ -43,6 +43,7 @@ pub struct Demodulator {
     sample_rate: f64,
     freq_lo: f64,
     freq_hi: f64,
+    #[expect(unused)]
     bit_rate: f64,
     sender: mpsc::Sender<RadioCommand>,
     // State for FSK demodulation

@@ -1,8 +1,8 @@
-use std::sync::mpsc::SendError;
+use std::sync::mpsc::{SyncSender, SendError};
 use std::io::BufRead;
 use core::ops::ControlFlow;
 use hackrf_rs::{
-    options::TxOptions,
+    options::{RxOptions, TxOptions},
     DeviceList, Hackrf,
 };
 use serde::Deserialize;
@@ -27,8 +27,6 @@ struct Config {
     shocker: Vec<ShockerConfig>,
 }
 
-
-
 fn load_config() -> LazyResult<Config> {
     let config_path = "shockers.toml";
     let config_content = std::fs::read_to_string(config_path)?;
@@ -36,17 +34,90 @@ fn load_config() -> LazyResult<Config> {
     Ok(config)
 }
 
+fn listen() -> LazyResult<()> {
+    let demodulator = jugbow_modem::Demodulator::new(
+        433_500_000.0, 10_000_000.0, move |radio| {
+            println!("Received data: {:x?}", radio);
+        },
+    );
+    let hackrf = Hackrf::open_first()?;
+    let rx_options = RxOptions {
+        center_freq: 433_500_000_u64.into(),
+        sample_rate: 10_000_000_f64.into(),
+        bandwidth: 3_500_000,
+        enable_amp: false,
+        enable_bias_tee: false,
+        lna_gain: 40,
+        vga_gain: 20,
+    };
+    demodulator.start_rx(hackrf, rx_options)?;
+    Ok(())
+}
 
+fn ctrlc_handler(terminate_tx: SyncSender<Command>, done2_tx: SyncSender<()>) {
+    ctrlc::set_handler(move || {
+        use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
+        static CTRL_C_PRESSED: AtomicU32 = AtomicU32::new(0);
+        match CTRL_C_PRESSED.fetch_add(1, Relaxed) {
+            0 => {
+                eprintln!("ctrl-c pressed, sending quit command...");
+                terminate_tx.send(Command::Quit).unwrap();
+            },
+            _ => {
+                eprintln!("ctrl-c already pressed, force quitting...");
+                done2_tx.send(()).unwrap();
+                std::process::exit(1);
+            },
+        }
+    }).expect("Error setting Ctrl-C handler");
+}
 
-fn main() -> LazyResult<()> {
-    // let mut current_state = Modulator::new(433_500_000.0, 10_000_000.0, 0x3a97b259957f1a27, 0xa5);
-    // current_state.set_command(Command::Vibrate(2));
-    // let samples = (10_000_000_f64 / 4790_f64 * 1180_f64) as usize * 2;
-    // let mut buffer = vec![0; samples];
-    // eprintln!("fill rv: {}", current_state.fill(&mut buffer));
-    // std::fs::write("generated.bin", buffer)?;
-    // if true { return Ok(()); }
+fn stdin_loop(stdin_tx: SyncSender<Command>) -> Result<(), SendError<Command>> {
+    // control loop
+    let mut cmd = String::new();
+    let stdin = std::io::stdin();
+    let mut handle = stdin.lock();
 
+    loop {
+        cmd.clear();
+        if handle.read_line(&mut cmd).is_err() {
+            cmd.clear();
+            cmd.push('q');
+        }
+        // ctrl-d pressed
+        if cmd.is_empty() {
+            cmd.push('q');
+        }
+        // empty line = vibrate once
+        if cmd.trim().is_empty() {
+            cmd.clear();
+            cmd.push('v');
+        }
+        let cmd = cmd.trim();
+        let chr = cmd.as_bytes()[0];
+        if !chr.is_ascii() { continue; }
+        let rest: Result<usize, _> = cmd[1..].trim().parse();
+        let command = match (chr, rest) {
+            (b'q', _) => Command::Quit,
+            (b'v', Ok(rest)) => Command::Vibrate(rest as u8),
+            (b'v', Err(_))   => Command::Vibrate(1),
+            (b's', Ok(rest)) => Command::Shock(rest as u8),
+            (b's', Err(_))   => Command::Shock(1),
+            (b'b', Ok(rest)) => Command::Beep(rest as u8),
+            (b'b', Err(_))   => Command::Beep(0xf1),
+            _ => Command::Idle,
+        };
+        let quit = command == Command::Quit;
+        stdin_tx.send(command)?;
+        if quit {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+fn control() -> LazyResult<()> {
     // Load shocker configurations
     let config = load_config()?;
     
@@ -114,65 +185,25 @@ fn main() -> LazyResult<()> {
     })?;
 
     // Ctrl-C handler
-    let terminate_tx = command_tx.clone();
-    ctrlc::set_handler(move || {
-        use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
-        static CTRL_C_PRESSED: AtomicU32 = AtomicU32::new(0);
-        match CTRL_C_PRESSED.fetch_add(1, Relaxed) {
-            0 => {
-                eprintln!("ctrl-c pressed, sending quit command...");
-                terminate_tx.send(Command::Quit).unwrap();
-            },
-            _ => {
-                eprintln!("ctrl-c already pressed, force quitting...");
-                done2_tx.send(()).unwrap();
-                std::process::exit(1);
-            },
-        }        
-    }).expect("Error setting Ctrl-C handler");
+    ctrlc_handler(command_tx.clone(), done2_tx);
 
     // stdin handler
     let stdin_tx = command_tx.clone();
-    std::thread::spawn::<_, Result<(), SendError<_>>>(move || {
-        // control loop
-        let mut cmd = String::new();
-        let stdin = std::io::stdin();
-        let mut handle = stdin.lock();
-
-        loop {
-            cmd.clear();
-            if handle.read_line(&mut cmd).is_err() {
-                cmd.clear();
-                cmd.push('q');
-            }
-            let cmd = cmd.trim();
-            let chr = if cmd.is_empty() { b'q' } else { cmd.as_bytes()[0] };
-            if !chr.is_ascii() { continue; }
-            let rest: Result<usize, _> = cmd[1..].trim().parse();
-            let command = match (chr, rest) {
-                (b'q', _) => Command::Quit,
-                (b'v', Ok(rest)) => Command::Vibrate(rest as u8),
-                (b'v', Err(_))   => Command::Vibrate(1),
-                (b's', Ok(rest)) => Command::Shock(rest as u8),
-                (b's', Err(_))   => Command::Shock(1),
-                (b'b', Ok(rest)) => Command::Beep(rest as u8),
-                (b'b', Err(_))   => Command::Beep(0xf1),
-                _ => Command::Idle,
-            };
-            let quit = command == Command::Quit;
-            stdin_tx.send(command)?;
-            if quit {
-                break;
-            }
-        }
-
-        Ok(())
-    });
+    std::thread::spawn(move || stdin_loop(stdin_tx));
 
     done_rx.recv()?;
     println!("done");
     hackrf.stop_tx()?;
     Ok(())
+}
+
+fn main() -> LazyResult<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args[1..] == ["listen"] {
+        listen()
+    } else {
+        control()
+    }
 }
 
 #[cfg(test)]
@@ -201,4 +232,3 @@ mod tests {
         assert_eq!(*state.get_command(), Command::Idle);
     }
 }
-
