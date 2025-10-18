@@ -42,3 +42,29 @@ The application will load the shocker configuration from `shockers.toml` and dis
 - Rust toolchain
 - HackRF hardware
 - libhackrf library
+
+### Installing Dependencies
+
+On Ubuntu/Debian:
+```bash
+sudo apt install libhackrf-dev libhackrf0
+```
+
+On macOS with Homebrew:
+```bash
+brew install hackrf
+```
+
+## Development
+
+### Running Tests
+
+```bash
+cargo test
+```
+
+### Building
+
+```bash
+cargo build
+```
