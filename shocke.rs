@@ -132,10 +132,10 @@ fn control() -> LazyResult<()> {
     println!("  Device ID: 0x{:016x}", shocker.device_id);
     println!("  Channel ID: 0x{:02x}", shocker.channel_id);
 
-    println!("Available devices:");
-    for device in DeviceList::new()?.iter() {
-        println!("{device:?}");
-    }
+    // println!("Available devices:");
+    // for device in DeviceList::new()?.iter() {
+    //     println!("{device:?}");
+    // }
 
     const RESET: bool = false;
     const RESET_MILLIS: u64 = 600;
