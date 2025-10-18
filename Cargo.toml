@@ -1,0 +1,14 @@
+[package]
+name = "shocke_rs"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "shocke_rs"
+path = "shocke.rs"
+
+[dependencies]
+ctrlc = "3.5.0"
+hackrf-rs = { path = "hackrf-rs" }
+
+

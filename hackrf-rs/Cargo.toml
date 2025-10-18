@@ -1,0 +1,10 @@
+[package]
+name = "hackrf-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hackrf-sys = { path="../hackrf-sys" }
+
+[dev-dependencies]
+ctrlc = "*"
