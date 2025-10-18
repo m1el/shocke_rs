@@ -435,7 +435,7 @@ mod tests {
         
         // Create a demodulator and channel
         let (tx, rx) = mpsc::channel();
-        let mut demodulator = Demodulator::new(433_500_000.0, 10_000_000.0, tx);
+        let mut demodulator = Demodulator::new(433_500_000.0, 10_000_000.0, move |cmd| tx.send(cmd).unwrap());
         
         // Process the generated samples
         demodulator.process_samples(&samples);
