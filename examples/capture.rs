@@ -149,7 +149,6 @@ impl Demodulator {
         if !self.in_packet {
             // Look for preamble pattern - try both phases (starting with 0 or 1)
             let mut best_alternating_count = 0;
-            let mut best_phase = false;
             
             for phase in [false, true] {
                 let mut alternating_count = 0;
@@ -163,7 +162,6 @@ impl Demodulator {
                 }
                 if alternating_count > best_alternating_count {
                     best_alternating_count = alternating_count;
-                    best_phase = phase;
                 }
             }
             
