@@ -3,7 +3,7 @@ use std::io::BufRead;
 use core::ops::ControlFlow;
 use hackrf_rs::{
     options::{RxOptions, TxOptions},
-    DeviceList, Hackrf,
+    Hackrf,
 };
 use serde::Deserialize;
 
